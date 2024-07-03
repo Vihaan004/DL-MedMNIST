@@ -19,7 +19,7 @@ from torchvision.models import resnet18, resnet50
 from tqdm import trange
 
 
-def main(data_flag, output_root, num_epochs, gpu_ids, batch_size, download, model_flag, resize, as_rgb, model_path, run):
+def main(data_flag, output_root, num_epochs, gpu_ids, batch_size, download, model_flag, resize, as_rgb, model_path, run, num_repeats):
 
     lr = 0.001
     gamma=0.1
@@ -78,106 +78,152 @@ def main(data_flag, output_root, num_epochs, gpu_ids, batch_size, download, mode
                                 shuffle=False)
 
     print('==> Building and training model...')
-    
-    
-    if model_flag == 'resnet18':
-        model =  resnet18(pretrained=False, num_classes=n_classes) if resize else ResNet18(in_channels=n_channels, num_classes=n_classes)
-    elif model_flag == 'resnet50':
-        model =  resnet50(pretrained=False, num_classes=n_classes) if resize else ResNet50(in_channels=n_channels, num_classes=n_classes)
-    else:
-        raise NotImplementedError
 
-    model = model.to(device)
+    all_train_metrics = []
+    all_val_metrics = []
+    all_test_metrics = []
 
-    train_evaluator = medmnist.Evaluator(data_flag, 'train')
-    val_evaluator = medmnist.Evaluator(data_flag, 'val')
-    test_evaluator = medmnist.Evaluator(data_flag, 'test')
-
-    if task == "multi-label, binary-class":
-        criterion = nn.BCEWithLogitsLoss()
-    else:
-        criterion = nn.CrossEntropyLoss()
-
-    if model_path is not None:
-        model.load_state_dict(torch.load(model_path, map_location=device)['net'], strict=True)
-        train_metrics = test(model, train_evaluator, train_loader_at_eval, task, criterion, device, run, output_root)
-        val_metrics = test(model, val_evaluator, val_loader, task, criterion, device, run, output_root)
-        test_metrics = test(model, test_evaluator, test_loader, task, criterion, device, run, output_root)
-
-        print('train  auc: %.5f  acc: %.5f\n' % (train_metrics[1], train_metrics[2]) + \
-              'val  auc: %.5f  acc: %.5f\n' % (val_metrics[1], val_metrics[2]) + \
-              'test  auc: %.5f  acc: %.5f\n' % (test_metrics[1], test_metrics[2]))
-
-    if num_epochs == 0:
-        return
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=gamma)
-
-    logs = ['loss', 'auc', 'acc']
-    train_logs = ['train_'+log for log in logs]
-    val_logs = ['val_'+log for log in logs]
-    test_logs = ['test_'+log for log in logs]
-    log_dict = OrderedDict.fromkeys(train_logs+val_logs+test_logs, 0)
-    
-    writer = SummaryWriter(log_dir=os.path.join(output_root, 'Tensorboard_Results'))
-
-    best_auc = 0
-    best_epoch = 0
-    best_model = deepcopy(model)
-
-    global iteration
-    iteration = 0
-    
-    for epoch in trange(num_epochs):        
-        train_loss = train(model, train_loader, task, criterion, optimizer, device, writer)
+    for run_idx in range(num_repeats):
+        print(f'Run {run_idx + 1}/{num_repeats}')
         
-        train_metrics = test(model, train_evaluator, train_loader_at_eval, task, criterion, device, run)
-        val_metrics = test(model, val_evaluator, val_loader, task, criterion, device, run)
-        test_metrics = test(model, test_evaluator, test_loader, task, criterion, device, run)
+        if model_flag == 'resnet18':
+            model =  resnet18(pretrained=False, num_classes=n_classes) if resize else ResNet18(in_channels=n_channels, num_classes=n_classes)
+        elif model_flag == 'resnet50':
+            model =  resnet50(pretrained=False, num_classes=n_classes) if resize else ResNet50(in_channels=n_channels, num_classes=n_classes)
+        else:
+            raise NotImplementedError
+
+        model = model.to(device)
+
+        train_evaluator = medmnist.Evaluator(data_flag, 'train')
+        val_evaluator = medmnist.Evaluator(data_flag, 'val')
+        test_evaluator = medmnist.Evaluator(data_flag, 'test')
+
+        if task == "multi-label, binary-class":
+            criterion = nn.BCEWithLogitsLoss()
+        else:
+            criterion = nn.CrossEntropyLoss()
+
+        if model_path is not None:
+            model.load_state_dict(torch.load(model_path, map_location=device)['net'], strict=True)
+            train_metrics = test(model, train_evaluator, train_loader_at_eval, task, criterion, device, run, output_root)
+            val_metrics = test(model, val_evaluator, val_loader, task, criterion, device, run, output_root)
+            test_metrics = test(model, test_evaluator, test_loader, task, criterion, device, run, output_root)
+
+            print('train  auc: %.5f  acc: %.5f\n' % (train_metrics[1], train_metrics[2]) + \
+                  'val  auc: %.5f  acc: %.5f\n' % (val_metrics[1], val_metrics[2]) + \
+                  'test  auc: %.5f  acc: %.5f\n' % (test_metrics[1], test_metrics[2]))
+
+        if num_epochs == 0:
+            return
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=gamma)
+
+        logs = ['loss', 'auc', 'acc']
+        train_logs = ['train_'+log for log in logs]
+        val_logs = ['val_'+log for log in logs]
+        test_logs = ['test_'+log for log in logs]
+        log_dict = OrderedDict.fromkeys(train_logs+val_logs+test_logs, 0)
         
-        scheduler.step()
+        writer = SummaryWriter(log_dir=os.path.join(output_root, f'Tensorboard_Results_{run_idx}'))
+
+        best_auc = 0
+        best_epoch = 0
+        best_model = deepcopy(model)
+
+        global iteration
+        iteration = 0
         
-        for i, key in enumerate(train_logs):
-            log_dict[key] = train_metrics[i]
-        for i, key in enumerate(val_logs):
-            log_dict[key] = val_metrics[i]
-        for i, key in enumerate(test_logs):
-            log_dict[key] = test_metrics[i]
-
-        for key, value in log_dict.items():
-            writer.add_scalar(key, value, epoch)
+        for epoch in trange(num_epochs):        
+            train_loss = train(model, train_loader, task, criterion, optimizer, device, writer)
             
-        cur_auc = val_metrics[1]
-        if cur_auc > best_auc:
-            best_epoch = epoch
-            best_auc = cur_auc
-            best_model = deepcopy(model)
-            print('cur_best_auc:', best_auc)
-            print('cur_best_epoch', best_epoch)
-
-    state = {
-        'net': best_model.state_dict(),
-    }
-
-    path = os.path.join(output_root, 'best_model.pth')
-    torch.save(state, path)
-
-    train_metrics = test(best_model, train_evaluator, train_loader_at_eval, task, criterion, device, run, output_root)
-    val_metrics = test(best_model, val_evaluator, val_loader, task, criterion, device, run, output_root)
-    test_metrics = test(best_model, test_evaluator, test_loader, task, criterion, device, run, output_root)
-
-    train_log = 'train  auc: %.5f  acc: %.5f\n' % (train_metrics[1], train_metrics[2])
-    val_log = 'val  auc: %.5f  acc: %.5f\n' % (val_metrics[1], val_metrics[2])
-    test_log = 'test  auc: %.5f  acc: %.5f\n' % (test_metrics[1], test_metrics[2])
-
-    log = '%s\n' % (data_flag) + train_log + val_log + test_log
-    print(log)
+            train_metrics = test(model, train_evaluator, train_loader_at_eval, task, criterion, device, run)
+            val_metrics = test(model, val_evaluator, val_loader, task, criterion, device, run)
+            test_metrics = test(model, test_evaluator, test_loader, task, criterion, device, run)
             
-    with open(os.path.join(output_root, '%s_log.txt' % (data_flag)), 'a') as f:
-        f.write(log)  
+            scheduler.step()
             
-    writer.close()
+            for i, key in enumerate(train_logs):
+                log_dict[key] = train_metrics[i]
+            for i, key in enumerate(val_logs):
+                log_dict[key] = val_metrics[i]
+            for i, key in enumerate(test_logs):
+                log_dict[key] = test_metrics[i]
+
+            for key, value in log_dict.items():
+                writer.add_scalar(key, value, epoch)
+                
+            cur_auc = val_metrics[1]
+            if cur_auc > best_auc:
+                best_epoch = epoch
+                best_auc = cur_auc
+                best_model = deepcopy(model)
+                print('cur_best_auc:', best_auc)
+                print('cur_best_epoch', best_epoch)
+
+        state = {
+            'net': best_model.state_dict(),
+        }
+
+        path = os.path.join(output_root, f'best_model_{run_idx}.pth')
+        torch.save(state, path)
+
+        train_metrics = test(best_model, train_evaluator, train_loader_at_eval, task, criterion, device, run, output_root)
+        val_metrics = test(best_model, val_evaluator, val_loader, task, criterion, device, run, output_root)
+        test_metrics = test(best_model, test_evaluator, test_loader, task, criterion, device, run, output_root)
+
+        train_log = 'train  auc: %.5f  acc: %.5f\n' % (train_metrics[1], train_metrics[2])
+        val_log = 'val  auc: %.5f  acc: %.5f\n' % (val_metrics[1], val_metrics[2])
+        test_log = 'test  auc: %.5f  acc: %.5f\n' % (test_metrics[1], test_metrics[2])
+
+        log = '%s\n' % (data_flag) + train_log + val_log + test_log
+        print(log)
+                
+        with open(os.path.join(output_root, f'{data_flag}_log_{run_idx}.txt'), 'a') as f:
+            f.write(log)
+        
+        writer.close()
+
+        all_train_metrics.append(train_metrics)
+        all_val_metrics.append(val_metrics)
+        all_test_metrics.append(test_metrics)
+
+    print("Training completed. Calculating mean and standard deviation of metrics...")
+
+    all_train_metrics = np.array(all_train_metrics)
+    all_val_metrics = np.array(all_val_metrics)
+    all_test_metrics = np.array(all_test_metrics)
+
+    mean_train_metrics = np.mean(all_train_metrics, axis=0)
+    std_train_metrics = np.std(all_train_metrics, axis=0)
+
+    mean_val_metrics = np.mean(all_val_metrics, axis=0)
+    std_val_metrics = np.std(all_val_metrics, axis=0)
+
+    mean_test_metrics = np.mean(all_test_metrics, axis=0)
+    std_test_metrics = np.std(all_test_metrics, axis=0)
+
+    print(f"Mean Train Metrics: {mean_train_metrics}")
+    print(f"Std Train Metrics: {std_train_metrics}")
+
+    print(f"Mean Val Metrics: {mean_val_metrics}")
+    print(f"Std Val Metrics: {std_val_metrics}")
+
+    print(f"Mean Test Metrics: {mean_test_metrics}")
+    print(f"Std Test Metrics: {std_test_metrics}")
+
+    summary_log = f"""
+    Summary of {num_repeats} runs for {data_flag}:
+
+    Train - Mean AUC: {mean_train_metrics[1]:.5f}, Std AUC: {std_train_metrics[1]:.5f}, Mean ACC: {mean_train_metrics[2]:.5f}, Std ACC: {std_train_metrics[2]:.5f}
+    Val - Mean AUC: {mean_val_metrics[1]:.5f}, Std AUC: {std_val_metrics[1]:.5f}, Mean ACC: {mean_val_metrics[2]:.5f}, Std ACC: {std_val_metrics[2]:.5f}
+    Test - Mean AUC: {mean_test_metrics[1]:.5f}, Std AUC: {std_test_metrics[1]:.5f}, Mean ACC: {mean_test_metrics[2]:.5f}, Std ACC: {std_test_metrics[2]:.5f}
+    """
+    print(summary_log)
+
+    with open(os.path.join(output_root, 'summary_log.txt'), 'a') as f:
+        f.write(summary_log)
 
 
 def train(model, train_loader, task, criterion, optimizer, device, writer):
@@ -246,7 +292,7 @@ if __name__ == '__main__':
         description='RUN Baseline model of MedMNIST2D')
 
     parser.add_argument('--data_flag',
-                        default='pathmnist',
+                        default='chestmnist',
                         type=str)
     parser.add_argument('--output_root',
                         default='./output',
@@ -275,13 +321,17 @@ if __name__ == '__main__':
                         help='root of the pretrained model to test',
                         type=str)
     parser.add_argument('--model_flag',
-                        default='resnet18',
+                        default='resnet50',
                         help='choose backbone from resnet18, resnet50',
                         type=str)
     parser.add_argument('--run',
                         default='model1',
                         help='to name a standard evaluation csv file, named as {flag}_{split}_[AUC]{auc:.3f}_[ACC]{acc:.3f}@{run}.csv',
                         type=str)
+    parser.add_argument('--num_repeats',
+                        default=5,
+                        help='number of times to repeat the training',
+                        type=int)
 
 
     args = parser.parse_args()
@@ -296,5 +346,6 @@ if __name__ == '__main__':
     as_rgb = args.as_rgb
     model_path = args.model_path
     run = args.run
+    num_repeats = args.num_repeats
     
-    main(data_flag, output_root, num_epochs, gpu_ids, batch_size, download, model_flag, resize, as_rgb, model_path, run)
+    main(data_flag, output_root, num_epochs, gpu_ids, batch_size, download, model_flag, resize, as_rgb, model_path, run, num_repeats)
